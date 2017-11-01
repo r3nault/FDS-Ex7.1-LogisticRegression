@@ -60,9 +60,8 @@ Libraries loaded: dplyr, mice, caTools, ROCR, ggplot2
 ```{r data1, echo=TRUE, eval=TRUE, warning=FALSE}
 # Check out the data structure
   str(NH11)
-# Take a subset of variables - specified by task: age_p (Age), r_maritl (Marital Status), everwrk (Ever Worked)
-# Demographic variables plus wkdayr (Number of work loss days, past 12 months)
-  NH11_sub <- NH11[c("region", "hispan_i", "mracrpi2", "age_p","r_maritl","sex","everwrk", "wkdayr")]
+# Take a subset of variables - all usable variables
+  NH11_sub <- NH11 %>% select(-(fmx:wtfa_sa), -strat_p, -psu_p, -aasmyr, -(dibage:dibpill), -arthlmt, -(aflhca18:aldura18), -(cigsday:modmin), -ausualpl, -beddayr)
   summary(NH11_sub)
 ```
 
@@ -80,36 +79,14 @@ If **wkdayr** > 0 then **everwrk** must be Yes, impute these values.
   summary(NH11_sub)
 ```
 
-There are still many missing values. Clean up race/ethnicity then perform mice imputation. We are also done with **wkdayr** so it can go.
+There are still many missing values. Clean up race/ethnicity and delete records where **everwrk** is NA. We are also done with **wkdayr** so it can go.
 
 ```{r data4, echo=TRUE, eval=TRUE, warning=FALSE}
   NH11_sub <- NH11_sub %>% mutate(ethnicity = if_else(hispan_i != "12 Not Hispanic/Spanish origin", "04 Hispanic", as.character(mracrpi2)), ethnicity = factor(ethnicity, levels = unique(ethnicity))) %>% select(-hispan_i, -mracrpi2)
 
-  NH11_sub <- NH11_sub %>% select(-wkdayr)
-  set.seed(1000)
-  imputed <- complete(mice(NH11_sub))
-  
+  NH11_sub <- NH11_sub %>% filter(!is.na(everwrk)) %>% select(-wkdayr)
   summary(NH11_sub)
-  summary(imputed)
 ```
-
-Replace **everwrk** with the imputed values.
-
-```{r data5, echo=TRUE, eval=TRUE, warning=FALSE}
-  NH11_sub$everwrk <- imputed$everwrk
-```
-
-Check why summary lists "other" under **r_maritl**.
-
-```{r data6, echo=TRUE, eval=TRUE, warning=FALSE}
-  NH11_sub %>% group_by(r_maritl) %>% tally
-  NH11_sub <- NH11_sub %>% filter(r_maritl != "9 Unknown marital status")
-  NH11_sub$r_maritl <- factor(NH11_sub$r_maritl, levels = c("7 Never married", "8 Living with partner", "1 Married - spouse in household","2 Married - spouse not in household", "6 Separated", "5 Divorced", "4 Widowed", "0 Under 14 Years", "3 Married - spouse in household unknown"))
-  levels(NH11_sub$r_maritl) <- c("1 Never married", "2 Living with partner", "3 Married - spouse in household", "4 Married - spouse not in household","5 Separated", "6 Divorced", "7 Widowed", "98 Under 14 Years", "99 Married - spouse in household unknown")
-  NH11_sub$r_maritl <- as.factor(as.character(NH11_sub$r_maritl))
-```
-
-We need to remove "Unknown marital status" as it is not meaningful when modelling. We also re-leveled the **r_maritl** variable to approximate the usual chronology of status, otherwise coefficients may not be sensible (*Under 14 Years* and *Married - spouse in household unknown* did not have any records).
 
 What about age, are there any anomalies?
 
@@ -119,11 +96,29 @@ What about age, are there any anomalies?
 
 It looks as if anyone over 85 has been marked with an age of 85 so we will need to filter out these records. Let's also bracket age into 11-year buckets.
 
-Ok, it's all ready to go, we can change **everwrk** to classifications of 1 or 0 and and move on.
+Clean up other variables. We need to remove "Unknown marital status" as it is not meaningful when modelling. We also re-leveled the **r_maritl** variable to approximate the usual chronology of status, otherwise coefficients may not be sensible (*Under 14 Years* and *Married - spouse in household unknown* did not have any records). We clean any other NAs and filter BMI for less than 75 and sleep less than 24 hours.
 
-```{r data8, echo=TRUE, eval=TRUE, warning=FALSE}
+```{r data6, echo=TRUE, eval=TRUE, warning=FALSE}
+  NH11_sub %>% group_by(r_maritl) %>% tally
+  NH11_sub <- NH11_sub %>% filter(r_maritl != "9 Unknown marital status")
+  NH11_sub$r_maritl <- factor(NH11_sub$r_maritl, levels = c("7 Never married", "8 Living with partner", "1 Married - spouse in household","2 Married - spouse not in household", "6 Separated", "5 Divorced", "4 Widowed", "0 Under 14 Years", "3 Married - spouse in household unknown"))
+  levels(NH11_sub$r_maritl) <- c("1 Never married", "2 Living with partner", "3 Married - spouse in household", "4 Married - spouse not in household","5 Separated", "6 Divorced", "7 Widowed", "98 Under 14 Years", "99 Married - spouse in household unknown")
+  NH11_sub$r_maritl <- as.factor(as.character(NH11_sub$r_maritl))
+  
   NH11_sub <- NH11_sub %>% filter(age_p < 85) %>% mutate(age_p = factor(cut(age_p, breaks=6)))
   levels(NH11_sub$everwrk) <- c(1,0)
+  
+  NH11_sub <- NH11_sub %>%
+    mutate(hypev = factor(NH11_sub$hypev, levels = c("1 Yes","2 No")), aasmev = factor(NH11_sub$aasmev, levels = c("1 Yes","2 No")), dibev = factor(NH11_sub$dibev, levels = c("1 Yes","2 No","3 Borderline")),
+    arth1 = factor(NH11_sub$arth1, levels = c("1 Yes","2 No")), smkev = factor(NH11_sub$smkev, levels = c("1 Yes","2 No"))) %>% 
+    filter(bmi < 75 & sleep < 24 & !is.na(hypev) & !is.na(aasmev) & !is.na(dibev) & !is.na(arth1) & !is.na(smkev))
+```
+
+Ok, it's all ready to go, we can convert independent variables to log numerics and move on.
+
+```{r data8, echo=TRUE, eval=TRUE, warning=FALSE}
+  NH11_subnorm <- NH11_sub %>% mutate_at(vars(-everwrk),.funs=as.numeric) %>% mutate_at(vars(-everwrk), .funs=log10)
+  summary(NH11_subnorm)
 ```
 
 ## Logistic Regression Model
@@ -135,9 +130,9 @@ Goal: Predict the probability of working for each level of marital status.
 ```{r mdl1, echo=TRUE, eval=TRUE, warning=FALSE}
   # split data 65% training, 35% test
   set.seed(1000)
-  split <- sample.split(NH11_sub$everwrk, SplitRatio = 0.65)
-  NH11_subTrain <- subset(NH11_sub, split==TRUE)
-  NH11_subTest <- subset(NH11_sub, split==FALSE)
+  split <- sample.split(NH11_subnorm$everwrk, SplitRatio = 0.65)
+  NH11_subTrain <- subset(NH11_subnorm, split==TRUE)
+  NH11_subTest <- subset(NH11_subnorm, split==FALSE)
   # evaluate baseline model, assume everyone works
   table(NH11_subTrain$r_maritl, NH11_subTrain$everwrk)
   nrow(NH11_subTrain[NH11_subTrain$everwrk==1,])/nrow(NH11_subTrain)
@@ -152,7 +147,9 @@ The baseline model has an accuracy of 91.4%.
   cor(NH11_subTrain_num)
 ```
 
-There seems to be slight multicollinearity between age and marital status, which makes sense since older people are more likely to have journeyed through the chronologically ordered marital statuses. None of the x variables have a strong correlation with the y variable.
+There seems to be slight multicollinearity between age and marital status, which makes sense since older people are more likely to have journeyed through the chronologically ordered marital statuses. There is also some correlation between age and medical conditions, and between medical conditions themselves, but no strong multicollinearity.
+
+None of the x variables have a strong correlation with the y variable.
 
 ### Create logistic regression models
 
@@ -167,7 +164,7 @@ For the logistic regression model, let's compare the results with and without ag
   summary(everwrkLog2)
 ```
 
-Including age did not reduce the AIC by much but it did reduce the significance of some of the variables as predictors. So we'll stay with the model which excludes age.
+Both models show significant predictor variables.
 
 ### Model evaluation
 
@@ -179,9 +176,12 @@ Let's check model accuracy using t=0.5:
   
   pred2 <- predict(everwrkLog2, type="response")
   table(NH11_subTrain$everwrk, pred2 >= 0.5)
+  (18+1075)/(nrow(NH11_subTrain))
 ```
 
-This model actually did not predict any probabilities above 0.5 so the accuracy is unchanged from the baseline model. So does the model have any way to distinguish between "ever having worked" or not?
+The first model actually did not predict any probabilities above 0.5 so the accuracy is unchanged from the baseline model. The second model managed an accuracy of only 8%!
+
+So does either model have any way to distinguish between "ever having worked" or not?
 
 ```{r mdl5, echo=TRUE, eval=TRUE, warning=FALSE}
 ROCR_pred1 <- prediction(pred1, NH11_subTrain$everwrk)
@@ -191,5 +191,22 @@ ROCR_pred2 <- prediction(pred2, NH11_subTrain$everwrk)
 as.numeric(performance(ROCR_pred2, "auc")@y.values)
 ```
 
+Both AUCs are low. In the absence of better data, we'll take the inverse of model 2 since it has the lower AUC (therefore the inverse is higher).
 
-Let's look at the ROC Curve to see what threshold value 
+```{r mdl6, echo=TRUE, eval=TRUE, warning=FALSE}
+  pred2 <- -predict(everwrkLog2, type="response")+1
+  table(NH11_subTrain$everwrk, pred2 >= 0.5)
+  (11997+14)/nrow(NH11_subTrain)
+  
+  ROCR_pred2 <- prediction(pred2, NH11_subTrain$everwrk)
+  as.numeric(performance(ROCR_pred2, "auc")@y.values)
+```
+
+This time the model managed a prediction accuracy of 91.65% at t=0.5, or about the same as the baseline. Let's look at the ROC Curve to see what threshold value might work better.
+
+```{r mdl7, echo=TRUE, eval=TRUE, warning=FALSE}
+ROCR_perf2 = performance(ROCR_pred2, "tpr", "fpr")
+plot(ROCR_perf2, colorize=TRUE, print.cutoffs.at = seq(0, 1, 0.1), text.adj = c(-0.2, 1.7))
+```
+
+Well, it looks like that is about the best we can do so let's just stay with the baseline model!
